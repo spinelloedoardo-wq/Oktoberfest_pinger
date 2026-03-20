@@ -1,7 +1,14 @@
 {
   "notified": false,
-  "new_link_notified": false,
-  "known_links": [],
-  "last_check": "2026-03-20T11:01:06.913041+00:00",
-  "errors": 1
+  "new_link_notified": true,
+  "known_links": [
+    "https://reservierung.loewenbraeuzelt.de/reservierung?utm_source=newsbanner_oktobook",
+    "https://reservierung.hb-festzelt.de/reservierung?utm_source=newsbanner_oktobook",
+    "https://reservierung.derhimmelderbayern.de/reservierung/?utm_source=newsbanner_oktobook",
+    "https://reservierung.paulanerfestzelt.de/reservierung/?utm_source=newsbanner_oktobook",
+    "https://reservierung.weinzelt.com/reservation/?utm_source=newsbanner_oktobook",
+    "https://reservierung.schuetzenfestzelt.com/?utm_source=newsbanner_oktobook"
+  ],
+  "last_check": "2026-03-20T11:14:04.265960+00:00",
+  "errors": 0
 }
