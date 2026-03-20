@@ -3,12 +3,16 @@ Oktoberfest Augustiner Festhalle — reservation availability checker.
 
 Monitors www.oktoberfest-booking.com and alerts via WhatsApp (Twilio)
 as soon as a reservation link for the Augustiner tent appears.
+Also monitors booking sites for a specific target date (26.09.2026).
 
 Required env vars:
   TWILIO_ACCOUNT_SID  – Twilio Account SID (starts with AC...)
   TWILIO_AUTH_TOKEN   – Twilio Auth Token
   TWILIO_FROM         – Twilio WhatsApp number, e.g. whatsapp:+14155238886
   WA_TO               – Your WhatsApp number, e.g. whatsapp:+393407480234
+
+Optional env vars:
+  SIMULATE_DATE       – Set to "1" to force a date availability notification (testing)
 """
 
 import os
@@ -21,27 +25,34 @@ from datetime import datetime, timezone
 import requests
 import cloudscraper
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN  = os.environ["TWILIO_AUTH_TOKEN"]
-TWILIO_FROM        = os.environ["TWILIO_FROM"]   # e.g. whatsapp:+14155238886
-WA_TO              = os.environ["WA_TO"]          # e.g. whatsapp:+393407480234
+TWILIO_FROM        = os.environ["TWILIO_FROM"]
+WA_TO              = os.environ["WA_TO"]
 
 TARGET_URL = os.environ.get("OKTOBERFEST_URL", "https://www.oktoberfest-booking.com")
+SIMULATE_DATE = os.environ.get("SIMULATE_DATE", "0") == "1"
 
-# Primary: link href or text contains one of these (case-insensitive)
 AUGUSTINER_KEYWORDS = ["augustiner", "augustiner-festhalle", "augustinerfesthalle"]
-
-# Secondary safety net: signature shared by ALL oktoberfest-booking.com tent links.
-# Any NEW link with this UTM parameter that wasn't there last run gets flagged too,
-# in case Augustiner uses an unexpected domain name.
 BOOKING_UTM = "utm_source=newsbanner_oktobook"
+
+# Date to monitor across all booking sites
+TARGET_DATE = "26.09"
+
+# Sites that show dates as visible text (confirmed working)
+DATE_CHECK_SITES = [
+    ("Löwenbräu",     "https://reservierung.loewenbraeuzelt.de/reservierung"),
+    ("Hofbräu",       "https://reservierung.hb-festzelt.de/reservierung"),
+    ("Himmel Bayern", "https://reservierung.derhimmelderbayern.de/reservierung/"),
+    ("Paulaner",      "https://reservierung.paulanerfestzelt.de/reservierung/"),
+]
 
 STATE_FILE = "state.json"
 
-# Realistic browser headers — the site returns 403 to plain requests
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -72,7 +83,14 @@ def load_state() -> dict:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
-    return {"notified": False, "new_link_notified": False, "known_links": [], "last_check": None, "errors": 0}
+    return {
+        "notified": False,
+        "new_link_notified": False,
+        "known_links": [],
+        "date_notified": [],   # list of tent names already notified for target date
+        "last_check": None,
+        "errors": 0,
+    }
 
 
 def save_state(state: dict) -> None:
@@ -82,15 +100,10 @@ def save_state(state: dict) -> None:
 # ── Page fetching ─────────────────────────────────────────────────────────────
 
 def fetch_with_requests(url: str) -> str:
-    """
-    Fetch page HTML using cloudscraper (handles Cloudflare JS challenge automatically).
-    Falls through to plain requests on import error.
-    """
     scraper = cloudscraper.create_scraper(
         browser={"browser": "chrome", "platform": "windows", "mobile": False}
     )
     scraper.headers.update(HEADERS)
-    # Warm-up request to get cookies
     scraper.get("https://www.oktoberfest-booking.com", timeout=30)
     time.sleep(random.uniform(1.5, 3.0))
     resp = scraper.get(url, timeout=30, allow_redirects=True)
@@ -99,13 +112,6 @@ def fetch_with_requests(url: str) -> str:
 
 
 def fetch_with_playwright(url: str) -> str:
-    """
-    Fallback: use a real Chromium browser (Playwright).
-    Only attempted if requests returns 403/blocked.
-    Requires: pip install playwright && playwright install chromium
-    """
-    from playwright.sync_api import sync_playwright  # lazy import
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -114,21 +120,32 @@ def fetch_with_playwright(url: str) -> str:
             viewport={"width": 1280, "height": 800},
         )
         page = context.new_page()
-        # Block images/fonts to speed up loading
         page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf}", lambda r: r.abort())
         page.goto(url, wait_until="networkidle", timeout=60000)
-        time.sleep(random.uniform(3, 6))  # extra wait for JS-rendered content
+        time.sleep(random.uniform(3, 6))
         html = page.content()
         browser.close()
     return html
 
-# ── Availability check ────────────────────────────────────────────────────────
+
+def fetch_booking_site(url: str) -> str:
+    """Fetch a tent booking site with Playwright (they don't have Cloudflare issues)."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            locale="de-DE",
+        ).new_page()
+        page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf}", lambda r: r.abort())
+        page.goto(url, wait_until="networkidle", timeout=30000)
+        time.sleep(2)
+        text = page.inner_text("body")
+        browser.close()
+    return text
+
+# ── Availability checks ────────────────────────────────────────────────────────
 
 def extract_booking_links(html: str) -> dict[str, str]:
-    """
-    Returns all tent booking links found on the page as {href: anchor_text}.
-    A booking link is any <a> whose href contains the shared UTM signature.
-    """
     soup = BeautifulSoup(html, "lxml")
     links = {}
     for tag in soup.find_all("a", href=True):
@@ -138,38 +155,19 @@ def extract_booking_links(html: str) -> dict[str, str]:
 
 
 def find_augustiner_link(html: str) -> str | None:
-    """
-    Looks for an EXTERNAL Augustiner booking link — i.e. a link that:
-      - contains an Augustiner keyword in the href, AND
-      - is an absolute URL (starts with http), AND
-      - contains the shared UTM signature (confirms it's a booking link from oktoberfest-booking.com)
-    Returns the href of the first match, or None.
-    Relative links like /de/augustiner-... are info pages, NOT booking links — ignored.
-    """
     soup = BeautifulSoup(html, "lxml")
     for tag in soup.find_all("a", href=True):
         href = tag["href"]
         href_lower = href.lower()
-        is_external    = href_lower.startswith("http")
-        has_augustiner = any(kw in href_lower for kw in AUGUSTINER_KEYWORDS)
-        has_utm        = BOOKING_UTM in href_lower
-        if is_external and has_augustiner and has_utm:
+        if (href_lower.startswith("http")
+                and any(kw in href_lower for kw in AUGUSTINER_KEYWORDS)
+                and BOOKING_UTM in href_lower):
             return href
     return None
 
 
-def check_availability(known_links: list) -> tuple[bool, str | None, list, list]:
-    """
-    Returns:
-      is_available      – Augustiner keyword found
-      booking_url       – the Augustiner link (or None)
-      all_booking_links – all tent links currently on the page (for state persistence)
-      new_links         – tent links that weren't there last run (secondary alert)
-
-    Tries requests first; falls back to Playwright on 403/blocked.
-    """
+def check_main_site(known_links: list) -> tuple[bool, str | None, list, list]:
     time.sleep(random.uniform(1.0, 3.0))
-
     html = None
     try:
         html = fetch_with_requests(TARGET_URL)
@@ -177,26 +175,45 @@ def check_availability(known_links: list) -> tuple[bool, str | None, list, list]
     except requests.HTTPError as e:
         if e.response is not None and e.response.status_code in (403, 429, 503):
             print(f"  Blocked ({e.response.status_code}) — trying Playwright fallback...")
-            try:
-                html = fetch_with_playwright(TARGET_URL)
-                print("  Fetched with Playwright.")
-            except ImportError:
-                print(
-                    "  Playwright not installed. "
-                    "Add 'playwright' to requirements.txt and run 'playwright install chromium'.",
-                    file=sys.stderr,
-                )
-                raise
+            html = fetch_with_playwright(TARGET_URL)
+            print("  Fetched with Playwright.")
         else:
             raise
 
     augustiner_link = find_augustiner_link(html)
     booking_links   = extract_booking_links(html)
     new_links       = [url for url in booking_links if url not in known_links]
-
     return (augustiner_link is not None), augustiner_link, list(booking_links.keys()), new_links
 
-# ── WhatsApp notification (Twilio) ────────────────────────────────────────────
+
+def check_date_availability(already_notified: list) -> list[tuple[str, str]]:
+    """
+    Checks each booking site for TARGET_DATE.
+    Returns list of (tent_name, url) where date is newly available.
+    """
+    if SIMULATE_DATE:
+        print("  [SIMULATE] Forcing date found on Paulaner")
+        name = "Paulaner"
+        url  = "https://reservierung.paulanerfestzelt.de/reservierung/"
+        return [(name, url)] if name not in already_notified else []
+
+    found = []
+    for name, url in DATE_CHECK_SITES:
+        if name in already_notified:
+            continue
+        try:
+            time.sleep(random.uniform(1, 2))
+            text = fetch_booking_site(url)
+            if TARGET_DATE in text:
+                print(f"  Date {TARGET_DATE} found on {name}!")
+                found.append((name, url))
+            else:
+                print(f"  Date {TARGET_DATE} NOT on {name}")
+        except Exception as e:
+            print(f"  Error checking {name}: {e}", file=sys.stderr)
+    return found
+
+# ── WhatsApp notification ─────────────────────────────────────────────────────
 
 def send_whatsapp(message: str) -> None:
     url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
@@ -215,48 +232,53 @@ def send_whatsapp(message: str) -> None:
 
 def main() -> None:
     now = datetime.now(timezone.utc).isoformat()
-    print(f"[{now}] Checking: {TARGET_URL}")
+    print(f"[{now}] Checking...")
 
     state = load_state()
 
     try:
+        # ── 1. Check main site for Augustiner ─────────────────────────────
+        print(f"  Checking {TARGET_URL} for Augustiner...")
         known_links = state.get("known_links", [])
-        is_available, booking_url, all_links, new_links = check_availability(known_links)
+        is_available, booking_url, all_links, new_links = check_main_site(known_links)
         state["errors"] = 0
 
         print(f"  Augustiner found: {is_available}  →  {booking_url}")
-        print(f"  All booking links on page: {all_links}")
-        print(f"  New links since last run:  {new_links}")
-        print(f"  Previously notified: {state['notified']}")
 
-        # ── Primary alert: Augustiner keyword in link ──────────────────────
         if is_available and not state["notified"]:
-            msg = (
+            send_whatsapp(
                 "OKTOBERFEST AUGUSTINER - PRENOTAZIONI APERTE!\n"
                 f"Prenota subito: {booking_url}"
             )
-            print("  Sending WhatsApp notification (Augustiner found)...")
-            send_whatsapp(msg)
             state["notified"] = True
-
         elif not is_available and state["notified"]:
-            print("  Augustiner link gone — resetting notification flag.")
             state["notified"] = False
 
-        # ── Secondary alert: any unexpected new tent link appeared ─────────
         if new_links and not is_available and not state.get("new_link_notified"):
-            names = ", ".join(new_links)
-            msg = (
+            send_whatsapp(
                 "Oktoberfest Booking: nuova tenda aggiunta al sito!\n"
-                f"Controlla se è Augustiner: {names}\n"
+                f"Controlla se è Augustiner: {', '.join(new_links)}\n"
                 f"Sito: {TARGET_URL}"
             )
-            print("  Sending WhatsApp notification (new unknown link)...")
-            send_whatsapp(msg)
             state["new_link_notified"] = True
 
         state["known_links"] = all_links
-        state["last_check"]  = now
+
+        # ── 2. Check booking sites for target date ─────────────────────────
+        print(f"\n  Checking booking sites for {TARGET_DATE}.2026...")
+        already_notified = state.get("date_notified", [])
+        new_date_sites = check_date_availability(already_notified)
+
+        for tent_name, tent_url in new_date_sites:
+            send_whatsapp(
+                f"OKTOBERFEST {TARGET_DATE}.2026 DISPONIBILE!\n"
+                f"Tenda: {tent_name}\n"
+                f"Prenota subito: {tent_url}"
+            )
+            already_notified.append(tent_name)
+
+        state["date_notified"] = already_notified
+        state["last_check"] = now
 
     except Exception as e:
         state["errors"] = state.get("errors", 0) + 1
