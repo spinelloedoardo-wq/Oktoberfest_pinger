@@ -143,15 +143,22 @@ def extract_booking_links(html: str) -> dict[str, str]:
 
 def find_augustiner_link(html: str) -> str | None:
     """
-    Primary check: any <a> whose href or visible text contains an Augustiner keyword.
+    Looks for an EXTERNAL Augustiner booking link — i.e. a link that:
+      - contains an Augustiner keyword in the href, AND
+      - is an absolute URL (starts with http), AND
+      - contains the shared UTM signature (confirms it's a booking link from oktoberfest-booking.com)
     Returns the href of the first match, or None.
+    Relative links like /de/augustiner-... are info pages, NOT booking links — ignored.
     """
     soup = BeautifulSoup(html, "lxml")
     for tag in soup.find_all("a", href=True):
-        href = tag["href"].lower()
-        text = tag.get_text(strip=True).lower()
-        if any(kw in href or kw in text for kw in AUGUSTINER_KEYWORDS):
-            return tag["href"]
+        href = tag["href"]
+        href_lower = href.lower()
+        is_external    = href_lower.startswith("http")
+        has_augustiner = any(kw in href_lower for kw in AUGUSTINER_KEYWORDS)
+        has_utm        = BOOKING_UTM in href_lower
+        if is_external and has_augustiner and has_utm:
+            return href
     return None
 
 
