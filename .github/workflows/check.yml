@@ -4,7 +4,7 @@ on:
   schedule:
     # Every 10 minutes (GitHub Actions minimum effective interval is ~5 min,
     # but 10 min keeps the repo within free-tier limits and is polite to the target site)
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: # Allow manual trigger from the GitHub UI
 
 jobs:
