@@ -38,7 +38,6 @@ jobs:
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
           WA_TO: ${{ secrets.WA_TO }}
-          SIMULATE_DATE: "1"  # TEMPORARY — remove after date notification test
         run: python checker.py
 
       - name: Commit updated state
