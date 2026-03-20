@@ -1,12 +1,14 @@
 """
 Oktoberfest Augustiner Festhalle — reservation availability checker.
 
-Monitors www.oktoberfest-booking.com and alerts via WhatsApp (Callmebot)
+Monitors www.oktoberfest-booking.com and alerts via WhatsApp (Twilio)
 as soon as a reservation link for the Augustiner tent appears.
 
 Required env vars:
-  WA_PHONE          – WhatsApp number with country code, e.g. +393331234567
-  CALLMEBOT_APIKEY  – API key received from Callmebot
+  TWILIO_ACCOUNT_SID  – Twilio Account SID (starts with AC...)
+  TWILIO_AUTH_TOKEN   – Twilio Auth Token
+  TWILIO_FROM         – Twilio WhatsApp number, e.g. whatsapp:+14155238886
+  WA_TO               – Your WhatsApp number, e.g. whatsapp:+393407480234
 """
 
 import os
@@ -21,9 +23,12 @@ from bs4 import BeautifulSoup
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-WA_PHONE         = os.environ["WA_PHONE"]
-CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"]
-TARGET_URL       = os.environ.get("OKTOBERFEST_URL", "https://www.oktoberfest-booking.com")
+TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
+TWILIO_AUTH_TOKEN  = os.environ["TWILIO_AUTH_TOKEN"]
+TWILIO_FROM        = os.environ["TWILIO_FROM"]   # e.g. whatsapp:+14155238886
+WA_TO              = os.environ["WA_TO"]          # e.g. whatsapp:+393407480234
+
+TARGET_URL = os.environ.get("OKTOBERFEST_URL", "https://www.oktoberfest-booking.com")
 
 # Primary: link href or text contains one of these (case-insensitive)
 AUGUSTINER_KEYWORDS = ["augustiner", "augustiner-festhalle", "augustinerfesthalle"]
@@ -66,7 +71,7 @@ def load_state() -> dict:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
-    return {"notified": False, "last_check": None, "errors": 0}
+    return {"notified": False, "new_link_notified": False, "known_links": [], "last_check": None, "errors": 0}
 
 
 def save_state(state: dict) -> None:
@@ -177,13 +182,14 @@ def check_availability(known_links: list) -> tuple[bool, str | None, list, list]
 
     return (augustiner_link is not None), augustiner_link, list(booking_links.keys()), new_links
 
-# ── WhatsApp notification ─────────────────────────────────────────────────────
+# ── WhatsApp notification (Twilio) ────────────────────────────────────────────
 
 def send_whatsapp(message: str) -> None:
-    url = "https://api.callmebot.com/whatsapp.php"
-    resp = requests.get(
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+    resp = requests.post(
         url,
-        params={"phone": WA_PHONE, "text": message, "apikey": CALLMEBOT_APIKEY},
+        auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+        data={"From": TWILIO_FROM, "To": WA_TO, "Body": message},
         timeout=60,
     )
     resp.raise_for_status()
@@ -222,7 +228,6 @@ def main() -> None:
             state["notified"] = False
 
         # ── Secondary alert: any unexpected new tent link appeared ─────────
-        # Fires only if Augustiner wasn't caught by keyword (safety net)
         if new_links and not is_available and not state.get("new_link_notified"):
             names = ", ".join(new_links)
             msg = (
@@ -234,7 +239,6 @@ def main() -> None:
             send_whatsapp(msg)
             state["new_link_notified"] = True
 
-        # Update known links so we can detect future additions
         state["known_links"] = all_links
         state["last_check"]  = now
 
@@ -242,7 +246,6 @@ def main() -> None:
         state["errors"] = state.get("errors", 0) + 1
         print(f"  Error: {e}  (consecutive errors: {state['errors']})", file=sys.stderr)
 
-        # Warn via WhatsApp every 10 consecutive errors (possible persistent block)
         if state["errors"] % 10 == 0:
             try:
                 send_whatsapp(
