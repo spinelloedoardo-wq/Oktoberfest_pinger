@@ -1,11 +1,12 @@
 """
 Oktoberfest Augustiner Festhalle — reservation availability checker.
-Sends a WhatsApp notification via Callmebot when reservations open.
+
+Monitors www.oktoberfest-booking.com and alerts via WhatsApp (Callmebot)
+as soon as a reservation link for the Augustiner tent appears.
 
 Required env vars:
-  WA_PHONE          – your WhatsApp number with country code, e.g. +393331234567
-  CALLMEBOT_APIKEY  – the API key you received from Callmebot
-  OKTOBERFEST_URL   – URL of the Augustiner tent reservation page to monitor
+  WA_PHONE          – WhatsApp number with country code, e.g. +393331234567
+  CALLMEBOT_APIKEY  – API key received from Callmebot
 """
 
 import os
@@ -20,39 +21,39 @@ from bs4 import BeautifulSoup
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-WA_PHONE = os.environ["WA_PHONE"]
+WA_PHONE         = os.environ["WA_PHONE"]
 CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"]
-OKTOBERFEST_URL = os.environ["OKTOBERFEST_URL"]
+TARGET_URL       = os.environ.get("OKTOBERFEST_URL", "https://www.oktoberfest-booking.com")
+
+# The script flags success when it finds any link whose href or text contains
+# at least one of these strings (case-insensitive).
+AUGUSTINER_KEYWORDS = ["augustiner", "augustiner-festhalle", "augustinerfesthalle"]
 
 STATE_FILE = "state.json"
 
-# Keywords that signal reservations are open (checked in the page text, case-insensitive)
-OPEN_KEYWORDS = [
-    "prenota", "prenotazione", "reservierung", "reservieren",
-    "buchen", "buchung", "book now", "reserve", "reservation",
-    "tischreservierung", "reserve a table",
-]
-
-# Keywords that signal the page is explicitly closed/not-yet-open (reduces false positives)
-CLOSED_KEYWORDS = [
-    "nicht verfügbar", "not available", "non disponibile",
-    "coming soon", "demnächst", "prossimamente",
-]
-
+# Realistic browser headers — the site returns 403 to plain requests
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/123.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "it-IT,it;q=0.9,de;q=0.8,en;q=0.7",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "it-IT,it;q=0.9,de-DE;q=0.8,de;q=0.7,en-US;q=0.6,en;q=0.5",
     "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
+    "Pragma":         "no-cache",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
 }
 
-# ── State helpers ─────────────────────────────────────────────────────────────
+# ── State ─────────────────────────────────────────────────────────────────────
 
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
@@ -61,65 +62,106 @@ def load_state() -> dict:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
-    return {"available": False, "notified": False, "last_check": None, "errors": 0}
+    return {"notified": False, "last_check": None, "errors": 0}
 
 
 def save_state(state: dict) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
 
+# ── Page fetching ─────────────────────────────────────────────────────────────
+
+def fetch_with_requests(url: str) -> str:
+    """Fetch page HTML using requests + realistic headers. Raises on non-200."""
+    session = requests.Session()
+    # First visit the homepage to get cookies (mimics a real browser)
+    session.get("https://www.oktoberfest-booking.com", headers=HEADERS, timeout=30)
+    time.sleep(random.uniform(1.5, 3.5))
+    resp = session.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+    resp.raise_for_status()
+    return resp.text
+
+
+def fetch_with_playwright(url: str) -> str:
+    """
+    Fallback: use a real Chromium browser (Playwright).
+    Only attempted if requests returns 403/blocked.
+    Requires: pip install playwright && playwright install chromium
+    """
+    from playwright.sync_api import sync_playwright  # lazy import
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            locale="it-IT",
+            viewport={"width": 1280, "height": 800},
+        )
+        page = context.new_page()
+        # Block images/fonts to speed up loading
+        page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf}", lambda r: r.abort())
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(random.uniform(2, 4))  # let JS render
+        html = page.content()
+        browser.close()
+    return html
+
 # ── Availability check ────────────────────────────────────────────────────────
 
-def check_availability() -> tuple[bool, list[str]]:
+def find_augustiner_link(html: str) -> str | None:
     """
-    Fetches the target URL and looks for reservation signals.
-    Returns (is_available, list_of_found_open_keywords).
-    Raises on HTTP errors or timeouts.
+    Parses the page and looks for any <a> whose href or visible text
+    contains an Augustiner keyword.
+    Returns the href of the first match, or None if not found.
     """
-    # Polite random delay before each request (1–4 seconds)
-    time.sleep(random.uniform(1.0, 4.0))
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"].lower()
+        text = tag.get_text(strip=True).lower()
+        if any(kw in href or kw in text for kw in AUGUSTINER_KEYWORDS):
+            return tag["href"]  # return original (non-lowercased) href
+    return None
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
 
-    resp = session.get(OKTOBERFEST_URL, timeout=30, allow_redirects=True)
-    resp.raise_for_status()
+def check_availability() -> tuple[bool, str | None]:
+    """
+    Returns (is_available, booking_url_or_None).
+    Tries requests first; falls back to Playwright on 403/blocked.
+    """
+    time.sleep(random.uniform(1.0, 3.0))  # polite delay
 
-    soup = BeautifulSoup(resp.text, "lxml")
+    html = None
+    try:
+        html = fetch_with_requests(TARGET_URL)
+        print("  Fetched with requests.")
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code in (403, 429, 503):
+            print(f"  Blocked ({e.response.status_code}) — trying Playwright fallback...")
+            try:
+                html = fetch_with_playwright(TARGET_URL)
+                print("  Fetched with Playwright.")
+            except ImportError:
+                print(
+                    "  Playwright not installed. "
+                    "Add 'playwright' to requirements.txt and run 'playwright install chromium'.",
+                    file=sys.stderr,
+                )
+                raise
+        else:
+            raise
 
-    # Remove script and style noise
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    page_text = soup.get_text(separator=" ").lower()
-
-    found_open = [kw for kw in OPEN_KEYWORDS if kw in page_text]
-    found_closed = [kw for kw in CLOSED_KEYWORDS if kw in page_text]
-
-    # Also check for booking-related links/buttons
-    booking_elements = soup.find_all(
-        ["a", "button"],
-        string=lambda s: s and any(kw in s.lower() for kw in OPEN_KEYWORDS),
-    )
-
-    # Available = at least one open keyword AND no strong closed signal
-    # OR a booking link/button is present
-    is_available = (len(found_open) > 0 and len(found_closed) == 0) or len(booking_elements) > 0
-
-    return is_available, found_open
+    link = find_augustiner_link(html)
+    return (link is not None), link
 
 # ── WhatsApp notification ─────────────────────────────────────────────────────
 
 def send_whatsapp(message: str) -> None:
-    """Sends a WhatsApp message via Callmebot API."""
     url = "https://api.callmebot.com/whatsapp.php"
-    params = {
-        "phone": WA_PHONE,
-        "text": message,
-        "apikey": CALLMEBOT_APIKEY,
-    }
-    # Callmebot is sometimes slow — generous timeout
-    resp = requests.get(url, params=params, timeout=60)
+    resp = requests.get(
+        url,
+        params={"phone": WA_PHONE, "text": message, "apikey": CALLMEBOT_APIKEY},
+        timeout=60,
+    )
     resp.raise_for_status()
     print(f"  WhatsApp sent → HTTP {resp.status_code}")
 
@@ -127,56 +169,51 @@ def send_whatsapp(message: str) -> None:
 
 def main() -> None:
     now = datetime.now(timezone.utc).isoformat()
-    print(f"[{now}] Checking: {OKTOBERFEST_URL}")
+    print(f"[{now}] Checking: {TARGET_URL}")
 
     state = load_state()
 
     try:
-        is_available, found_keywords = check_availability()
-        state["errors"] = 0  # reset error counter on success
+        is_available, booking_url = check_availability()
+        state["errors"] = 0
 
-        print(f"  Available: {is_available}  |  Keywords found: {found_keywords}")
+        print(f"  Augustiner link found: {is_available}  →  {booking_url}")
         print(f"  Previously notified: {state['notified']}")
 
         if is_available and not state["notified"]:
             msg = (
-                "OKTOBERFEST AUGUSTINER ALERT!\n"
-                "Le prenotazioni per il tendone Augustiner sono APERTE!\n"
-                f"Vai subito su: {OKTOBERFEST_URL}"
+                "OKTOBERFEST AUGUSTINER - PRENOTAZIONI APERTE!\n"
+                f"Prenota subito: {booking_url}"
             )
             print("  Sending WhatsApp notification...")
             send_whatsapp(msg)
             state["notified"] = True
 
         elif not is_available and state["notified"]:
-            # Reservations seem to have closed again — reset so we can notify next time
-            print("  Page no longer shows availability — resetting notification flag.")
+            # Link disappeared (unlikely, but reset so we notify again if it reappears)
+            print("  Link no longer present — resetting notification flag.")
             state["notified"] = False
 
-        state["available"] = is_available
         state["last_check"] = now
 
-    except requests.HTTPError as e:
+    except Exception as e:
         state["errors"] = state.get("errors", 0) + 1
-        print(f"  HTTP error: {e}  (consecutive errors: {state['errors']})", file=sys.stderr)
-        # If blocked repeatedly, warn via WhatsApp (once every 10 consecutive errors)
+        print(f"  Error: {e}  (consecutive errors: {state['errors']})", file=sys.stderr)
+
+        # Warn via WhatsApp every 10 consecutive errors (possible persistent block)
         if state["errors"] % 10 == 0:
             try:
                 send_whatsapp(
                     f"Oktoberfest Pinger: {state['errors']} errori consecutivi "
-                    f"({e}). Potrebbe esserci un blocco. Controlla manualmente."
+                    f"({type(e).__name__}: {e}). "
+                    "Potrebbe esserci un blocco. Controlla manualmente."
                 )
             except Exception:
                 pass
 
-    except Exception as e:
-        state["errors"] = state.get("errors", 0) + 1
-        print(f"  Unexpected error: {e}  (consecutive errors: {state['errors']})", file=sys.stderr)
-
     finally:
         save_state(state)
-
-    print(f"  State saved. Done.")
+        print("  State saved. Done.")
 
 
 if __name__ == "__main__":

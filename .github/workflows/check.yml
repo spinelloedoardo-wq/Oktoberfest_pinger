@@ -29,6 +29,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Uncomment the next two steps only if the site blocks plain requests
+      # and you need the Playwright fallback:
+      # - name: Install Playwright
+      #   run: pip install playwright && playwright install chromium --with-deps
+
       - name: Run checker
         env:
           WA_PHONE: ${{ secrets.WA_PHONE }}
