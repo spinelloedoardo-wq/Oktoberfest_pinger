@@ -1,0 +1,52 @@
+name: Oktoberfest Augustiner Checker
+
+on:
+  schedule:
+    # Every 10 minutes (GitHub Actions minimum effective interval is ~5 min,
+    # but 10 min keeps the repo within free-tier limits and is polite to the target site)
+    - cron: "*/10 * * * *"
+  workflow_dispatch: # Allow manual trigger from the GitHub UI
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to commit state.json back to the repo
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          # Use the default GITHUB_TOKEN — no extra secrets needed for git push
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run checker
+        env:
+          WA_PHONE: ${{ secrets.WA_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          OKTOBERFEST_URL: ${{ secrets.OKTOBERFEST_URL }}
+        run: python checker.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          # Only commit if state.json actually changed
+          if git diff --staged --quiet; then
+            echo "No state change — nothing to commit."
+          else
+            git commit -m "chore: update state [skip ci]"
+            # Pull with rebase in case another run pushed first, then push
+            git pull --rebase origin main || git pull --rebase origin master
+            git push
+          fi

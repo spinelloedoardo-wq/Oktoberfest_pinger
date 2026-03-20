@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+
+# Local test state (state.json is tracked in the repo for GitHub Actions persistence)
+# Uncomment the next line only if you want to ignore it locally:
+# state.json
