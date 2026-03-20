@@ -262,7 +262,7 @@ def main() -> None:
         state["errors"] = state.get("errors", 0) + 1
         print(f"  Error: {e}  (consecutive errors: {state['errors']})", file=sys.stderr)
 
-        if state["errors"] % 10 == 0:
+        if state["errors"] % 3 == 0:
             try:
                 send_whatsapp(
                     f"Oktoberfest Pinger: {state['errors']} errori consecutivi "
