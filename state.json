@@ -9,6 +9,9 @@
     "https://reservierung.weinzelt.com/reservation/?utm_source=newsbanner_oktobook",
     "https://reservierung.schuetzenfestzelt.com/?utm_source=newsbanner_oktobook"
   ],
-  "last_check": "2026-03-20T11:30:46.651611+00:00",
-  "errors": 0
+  "last_check": "2026-03-20T11:52:23.163592+00:00",
+  "errors": 0,
+  "date_notified": [
+    "Paulaner"
+  ]
 }
