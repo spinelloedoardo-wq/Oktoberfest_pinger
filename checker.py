@@ -187,6 +187,11 @@ def check_availability(known_links: list) -> tuple[bool, str | None, list, list]
         else:
             raise
 
+    # Debug: show page title and first 400 chars regardless of fetch method
+    soup_debug = BeautifulSoup(html, "lxml")
+    print(f"  [DEBUG] Title: {soup_debug.title.string if soup_debug.title else 'N/A'!r}")
+    print(f"  [DEBUG] HTML snippet: {html[:400]!r}")
+
     augustiner_link = find_augustiner_link(html)
     booking_links   = extract_booking_links(html)
     new_links       = [url for url in booking_links if url not in known_links]
