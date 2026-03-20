@@ -112,6 +112,10 @@ def fetch_with_playwright(url: str) -> str:
         page.goto(url, wait_until="networkidle", timeout=60000)
         time.sleep(random.uniform(3, 6))  # extra wait for JS-rendered content
         html = page.content()
+        # Debug: print page title and snippet to diagnose Cloudflare/blocking issues
+        title = page.title()
+        print(f"  [DEBUG] Page title: {title!r}")
+        print(f"  [DEBUG] HTML snippet: {html[:300]!r}")
         browser.close()
     return html
 
