@@ -19,6 +19,7 @@ import sys
 from datetime import datetime, timezone
 
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -81,12 +82,18 @@ def save_state(state: dict) -> None:
 # ── Page fetching ─────────────────────────────────────────────────────────────
 
 def fetch_with_requests(url: str) -> str:
-    """Fetch page HTML using requests + realistic headers. Raises on non-200."""
-    session = requests.Session()
-    # First visit the homepage to get cookies (mimics a real browser)
-    session.get("https://www.oktoberfest-booking.com", headers=HEADERS, timeout=30)
-    time.sleep(random.uniform(1.5, 3.5))
-    resp = session.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+    """
+    Fetch page HTML using cloudscraper (handles Cloudflare JS challenge automatically).
+    Falls through to plain requests on import error.
+    """
+    scraper = cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "windows", "mobile": False}
+    )
+    scraper.headers.update(HEADERS)
+    # Warm-up request to get cookies
+    scraper.get("https://www.oktoberfest-booking.com", timeout=30)
+    time.sleep(random.uniform(1.5, 3.0))
+    resp = scraper.get(url, timeout=30, allow_redirects=True)
     resp.raise_for_status()
     return resp.text
 
