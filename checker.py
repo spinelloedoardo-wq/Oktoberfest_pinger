@@ -109,8 +109,8 @@ def fetch_with_playwright(url: str) -> str:
         page = context.new_page()
         # Block images/fonts to speed up loading
         page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf}", lambda r: r.abort())
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(random.uniform(2, 4))  # let JS render
+        page.goto(url, wait_until="networkidle", timeout=60000)
+        time.sleep(random.uniform(3, 6))  # extra wait for JS-rendered content
         html = page.content()
         browser.close()
     return html
