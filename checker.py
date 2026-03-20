@@ -215,6 +215,8 @@ def send_whatsapp(message: str) -> None:
         data={"From": TWILIO_FROM, "To": WA_TO, "Body": message},
         timeout=60,
     )
+    if not resp.ok:
+        print(f"  Twilio error {resp.status_code}: {resp.text}")
     resp.raise_for_status()
     print(f"  WhatsApp sent → HTTP {resp.status_code}")
 
