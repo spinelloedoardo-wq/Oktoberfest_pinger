@@ -1,6 +1,7 @@
 {
-  "available": false,
   "notified": false,
+  "new_link_notified": false,
+  "known_links": [],
   "last_check": null,
   "errors": 0
 }

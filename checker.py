@@ -25,9 +25,13 @@ WA_PHONE         = os.environ["WA_PHONE"]
 CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"]
 TARGET_URL       = os.environ.get("OKTOBERFEST_URL", "https://www.oktoberfest-booking.com")
 
-# The script flags success when it finds any link whose href or text contains
-# at least one of these strings (case-insensitive).
+# Primary: link href or text contains one of these (case-insensitive)
 AUGUSTINER_KEYWORDS = ["augustiner", "augustiner-festhalle", "augustinerfesthalle"]
+
+# Secondary safety net: signature shared by ALL oktoberfest-booking.com tent links.
+# Any NEW link with this UTM parameter that wasn't there last run gets flagged too,
+# in case Augustiner uses an unexpected domain name.
+BOOKING_UTM = "utm_source=newsbanner_oktobook"
 
 STATE_FILE = "state.json"
 
@@ -108,27 +112,44 @@ def fetch_with_playwright(url: str) -> str:
 
 # ── Availability check ────────────────────────────────────────────────────────
 
+def extract_booking_links(html: str) -> dict[str, str]:
+    """
+    Returns all tent booking links found on the page as {href: anchor_text}.
+    A booking link is any <a> whose href contains the shared UTM signature.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    links = {}
+    for tag in soup.find_all("a", href=True):
+        if BOOKING_UTM in tag["href"]:
+            links[tag["href"]] = tag.get_text(strip=True)
+    return links
+
+
 def find_augustiner_link(html: str) -> str | None:
     """
-    Parses the page and looks for any <a> whose href or visible text
-    contains an Augustiner keyword.
-    Returns the href of the first match, or None if not found.
+    Primary check: any <a> whose href or visible text contains an Augustiner keyword.
+    Returns the href of the first match, or None.
     """
     soup = BeautifulSoup(html, "lxml")
     for tag in soup.find_all("a", href=True):
         href = tag["href"].lower()
         text = tag.get_text(strip=True).lower()
         if any(kw in href or kw in text for kw in AUGUSTINER_KEYWORDS):
-            return tag["href"]  # return original (non-lowercased) href
+            return tag["href"]
     return None
 
 
-def check_availability() -> tuple[bool, str | None]:
+def check_availability(known_links: list) -> tuple[bool, str | None, list, list]:
     """
-    Returns (is_available, booking_url_or_None).
+    Returns:
+      is_available      – Augustiner keyword found
+      booking_url       – the Augustiner link (or None)
+      all_booking_links – all tent links currently on the page (for state persistence)
+      new_links         – tent links that weren't there last run (secondary alert)
+
     Tries requests first; falls back to Playwright on 403/blocked.
     """
-    time.sleep(random.uniform(1.0, 3.0))  # polite delay
+    time.sleep(random.uniform(1.0, 3.0))
 
     html = None
     try:
@@ -150,8 +171,11 @@ def check_availability() -> tuple[bool, str | None]:
         else:
             raise
 
-    link = find_augustiner_link(html)
-    return (link is not None), link
+    augustiner_link = find_augustiner_link(html)
+    booking_links   = extract_booking_links(html)
+    new_links       = [url for url in booking_links if url not in known_links]
+
+    return (augustiner_link is not None), augustiner_link, list(booking_links.keys()), new_links
 
 # ── WhatsApp notification ─────────────────────────────────────────────────────
 
@@ -174,27 +198,45 @@ def main() -> None:
     state = load_state()
 
     try:
-        is_available, booking_url = check_availability()
+        known_links = state.get("known_links", [])
+        is_available, booking_url, all_links, new_links = check_availability(known_links)
         state["errors"] = 0
 
-        print(f"  Augustiner link found: {is_available}  →  {booking_url}")
+        print(f"  Augustiner found: {is_available}  →  {booking_url}")
+        print(f"  All booking links on page: {all_links}")
+        print(f"  New links since last run:  {new_links}")
         print(f"  Previously notified: {state['notified']}")
 
+        # ── Primary alert: Augustiner keyword in link ──────────────────────
         if is_available and not state["notified"]:
             msg = (
                 "OKTOBERFEST AUGUSTINER - PRENOTAZIONI APERTE!\n"
                 f"Prenota subito: {booking_url}"
             )
-            print("  Sending WhatsApp notification...")
+            print("  Sending WhatsApp notification (Augustiner found)...")
             send_whatsapp(msg)
             state["notified"] = True
 
         elif not is_available and state["notified"]:
-            # Link disappeared (unlikely, but reset so we notify again if it reappears)
-            print("  Link no longer present — resetting notification flag.")
+            print("  Augustiner link gone — resetting notification flag.")
             state["notified"] = False
 
-        state["last_check"] = now
+        # ── Secondary alert: any unexpected new tent link appeared ─────────
+        # Fires only if Augustiner wasn't caught by keyword (safety net)
+        if new_links and not is_available and not state.get("new_link_notified"):
+            names = ", ".join(new_links)
+            msg = (
+                "Oktoberfest Booking: nuova tenda aggiunta al sito!\n"
+                f"Controlla se è Augustiner: {names}\n"
+                f"Sito: {TARGET_URL}"
+            )
+            print("  Sending WhatsApp notification (new unknown link)...")
+            send_whatsapp(msg)
+            state["new_link_notified"] = True
+
+        # Update known links so we can detect future additions
+        state["known_links"] = all_links
+        state["last_check"]  = now
 
     except Exception as e:
         state["errors"] = state.get("errors", 0) + 1
