@@ -1,16 +1,16 @@
 {
   "notified": false,
-  "new_link_notified": false,
+  "new_link_notified": true,
   "known_links": [
+    "https://reservierung.armbrustschuetzenzelt.de/reservierung?utm_source=newsbanner_oktobook",
     "https://reservierung.loewenbraeuzelt.de/reservierung?utm_source=newsbanner_oktobook",
     "https://reservierung.hb-festzelt.de/reservierung?utm_source=newsbanner_oktobook",
     "https://reservierung.derhimmelderbayern.de/reservierung/?utm_source=newsbanner_oktobook",
     "https://reservierung.paulanerfestzelt.de/reservierung/?utm_source=newsbanner_oktobook",
-    "https://reservierung.weinzelt.com/reservation/?utm_source=newsbanner_oktobook",
-    "https://reservierung.schuetzenfestzelt.com/?utm_source=newsbanner_oktobook"
+    "https://reservierung.weinzelt.com/reservation/?utm_source=newsbanner_oktobook"
   ],
-  "last_check": "2026-03-20T14:33:57.266147+00:00",
-  "errors": 1,
+  "last_check": "2026-03-21T10:31:00.414349+00:00",
+  "errors": 0,
   "date_notified": [
     "Paulaner"
   ]
