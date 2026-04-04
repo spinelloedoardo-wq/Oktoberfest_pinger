@@ -50,7 +50,10 @@ jobs:
             echo "No state change — nothing to commit."
           else
             git commit -m "chore: update state [skip ci]"
-            # Pull with rebase in case another run pushed first, then push
-            git pull --rebase origin main || git pull --rebase origin master
-            git push
+            # Retry push up to 3 times in case of concurrent run conflict
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && break
+              echo "Push attempt $i failed, retrying..."
+              sleep $((i * 2))
+            done
           fi
