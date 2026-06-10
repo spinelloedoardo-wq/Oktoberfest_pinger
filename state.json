@@ -2,14 +2,14 @@
   "notified": false,
   "new_link_notified": true,
   "known_links": [
+    "https://reservierung.schuetzenlisl.de/?utm_source=newsbanner_oktobook",
     "https://reservierung.boandlkramerei.bayern/reservation/?utm_source=newsbanner_oktobook",
     "https://reservierung.muenchnerstubn-festzelt.de/reservation/?utm_source=newsbanner_oktobook",
     "https://reservierung.zur-bratwurst.de/reservierung?utm_source=newsbanner_oktobook",
     "https://kaiserschmarrn.rischart.de/reservierung/?utm_source=newsbanner_oktobook",
-    "https://reservierung.cafe-theres.de/reservierung?utm_source=newsbanner_oktobook",
-    "https://reservierung.fischer-vroni.de/?utm_source=newsbanner_oktobook"
+    "https://reservierung.cafe-theres.de/reservierung?utm_source=newsbanner_oktobook"
   ],
-  "last_check": "2026-06-10T11:35:56.485783+00:00",
+  "last_check": "2026-06-10T11:41:00.360792+00:00",
   "errors": 0,
   "date_notified": [
     "Paulaner",
